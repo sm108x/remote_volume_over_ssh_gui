@@ -93,11 +93,16 @@ def save_config(config):
 
 
 def make_tray_image():
-    """A small speaker glyph on a flat circle -- no external icon asset needed."""
+    """A white speaker glyph on a flat, fully opaque square.
+
+    Fully opaque on purpose: legacy XEmbed tray hosts (e.g. Cinnamon's
+    "System tray" applet) often don't composite alpha at all and render any
+    transparent pixel as solid black, turning a nicer transparent icon into
+    an unrecognisable black square.
+    """
     size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    img = Image.new("RGBA", (size, size), (51, 102, 204, 255))
     draw = ImageDraw.Draw(img)
-    draw.ellipse((2, 2, size - 2, size - 2), fill=(51, 102, 204, 255))
     draw.rectangle((20, 26, 28, 38), fill=(255, 255, 255, 255))
     draw.polygon([(28, 26), (40, 16), (40, 48), (28, 38)], fill=(255, 255, 255, 255))
     return img
