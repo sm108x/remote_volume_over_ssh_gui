@@ -26,6 +26,11 @@ Install the Python dependencies:
 pip install -r requirements.txt
 ```
 
+If that fails with an "externally-managed-environment" error (common
+on Debian/Ubuntu/Mint), run `./install.sh` instead -- it offers a
+choice of a virtual environment, `--break-system-packages`, or apt
+packages, and installs accordingly.
+
 ## Usage
 
 ```sh
