@@ -365,28 +365,41 @@ class App:
     def on_slide(self, _value):
         percent = round(self.volume_var.get())
         self.percent_label.config(text=f"{percent}%")
+        self.send_volume(percent)
+
+    def send_volume(self, percent):
+        # Called both from the Scale's -command (user drags) and directly
+        # from nudge_volume (hotkeys) -- a Scale's -command is not guaranteed
+        # to fire from a bare external var.set(), so hotkeys can't rely on it.
         if percent == self.remote_volume or not self.remote:
-            return                      # programmatic update, nothing to send
+            return
         self.remote_volume = percent
         self.request_seq += 1
         self.remote.set_volume(percent, self.request_seq)
 
     def on_mute(self):
+        self.send_mute(self.mute_var.get())
+
+    def send_mute(self, muted):
         if self.remote:
             self.request_seq += 1
-            self.remote.set_mute(self.mute_var.get(), self.request_seq)
+            self.remote.set_mute(muted, self.request_seq)
 
     def nudge_volume(self, delta):
         if not self.remote:
             return
         current = round(self.volume_var.get())
-        self.volume_var.set(max(0, min(100, current + delta)))
+        percent = max(0, min(100, current + delta))
+        self.volume_var.set(percent)
+        self.percent_label.config(text=f"{percent}%")
+        self.send_volume(percent)
 
     def toggle_mute(self):
         if not self.remote:
             return
-        self.mute_var.set(not self.mute_var.get())
-        self.on_mute()
+        muted = not self.mute_var.get()
+        self.mute_var.set(muted)
+        self.send_mute(muted)
 
     # -- global shortcuts -----------------------------------------------------
     def init_hotkeys(self):
