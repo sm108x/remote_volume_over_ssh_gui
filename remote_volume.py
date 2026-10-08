@@ -468,6 +468,18 @@ class App:
             )
             threading.Thread(target=icon.run, daemon=True).start()
             self.tray_icon = icon
+            print(
+                f"Tray icon backend: {type(icon).__module__}.{type(icon).__name__}\n"
+                "If you don't see it, this backend's icon has nothing to render "
+                "into on this desktop -- on Cinnamon that usually means no "
+                "tray/status applet is on the panel (right-click the panel > "
+                "Applets > add 'XApp Status Applet' or similar), or the "
+                "StatusNotifierItem watcher service isn't running (try: sudo "
+                "apt install ayatana-indicator-application). You can also force "
+                "a different backend to test, e.g.: "
+                "PYSTRAY_BACKEND=xorg python3 remote_volume.py "
+                "(other values: appindicator, gtk)."
+            )
         except Exception as exc:
             self.tray_icon = None
             print(f"Tray icon unavailable: {exc}", file=sys.stderr)

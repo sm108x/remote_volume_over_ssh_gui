@@ -45,3 +45,17 @@ up/down/mute). Avoid arrow keys for these: Cinnamon/GNOME bind every
 `Ctrl+Alt(+Shift)+arrow` combo by default (workspace switching and moving
 windows between workspaces), and that window-manager grab silently wins
 over this app's listener.
+
+### Tray icon not visible
+
+The app prints which `pystray` backend it picked on startup. If the icon
+doesn't show up anywhere, that backend likely has nothing on your desktop
+to render into -- no error is raised, it's just invisible. On Cinnamon:
+
+- Make sure a tray/status applet is actually on the panel: right-click the
+  panel > Applets > add "XApp Status Applet" (or similar). Ubuntu's Cinnamon
+  build doesn't always ship one by default the way Linux Mint does.
+- Install the StatusNotifierItem watcher service if it's missing:
+  `sudo apt install ayatana-indicator-application`.
+- Force a different backend to test: `PYSTRAY_BACKEND=xorg python3
+  remote_volume.py` (other values: `appindicator`, `gtk`).
