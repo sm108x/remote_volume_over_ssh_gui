@@ -27,7 +27,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -111,13 +110,14 @@ class Remote(threading.Thread):
         self.cmds = queue.Queue()
         self.stopping = threading.Event()
         self.proc = None
+        self.last_seq = 0   # sequence number of the last command actually applied
 
     # -- called from the GUI thread ---------------------------------------
-    def set_volume(self, percent):
-        self.cmds.put(("vol", percent))
+    def set_volume(self, percent, seq):
+        self.cmds.put(("vol", percent, seq))
 
-    def set_mute(self, muted):
-        self.cmds.put(("mute", muted))
+    def set_mute(self, muted, seq):
+        self.cmds.put(("mute", muted, seq))
 
     def stop(self):
         self.stopping.set()
@@ -196,11 +196,12 @@ class Remote(threading.Thread):
                     break
             volume = None
             mute = None
-            for kind, value in items:
+            for kind, value, seq in items:
                 if kind == "vol":
                     volume = value
                 else:
                     mute = value
+                self.last_seq = max(self.last_seq, seq)
             if mute is not None:
                 self._run(f"wpctl set-mute {SINK} {1 if mute else 0}")
             if volume is not None:
@@ -212,7 +213,7 @@ class Remote(threading.Thread):
         match = VOLUME_RE.search(out)
         if code == 0 and match:
             percent = round(float(match.group(1)) * 100)
-            self.ui.put(("state", percent, bool(match.group(2))))
+            self.ui.put(("state", percent, bool(match.group(2)), self.last_seq))
             self.ui.put(("status", f"Connected to {self.host}", True))
         else:
             self._status(f"Remote error: {out.strip() or 'wpctl failed'}", False)
@@ -288,8 +289,8 @@ class App:
         self.hotkey_listener = None
         self.tray_icon = None
         self.remote_volume = None     # last value reported by the remote
-        self.dragging = False
-        self.last_user_change = 0.0
+        self.request_seq = 0          # bumped on every command we send; lets
+                                       # show_state ignore readings that predate it
 
         root.title("Remote Volume")
         root.resizable(False, False)
@@ -312,8 +313,6 @@ class App:
             length=300, command=self.on_slide,
         )
         self.scale.grid(row=1, column=0, columnspan=2, pady=(14, 4), sticky="we")
-        self.scale.bind("<ButtonPress-1>", lambda _e: self._drag(True))
-        self.scale.bind("<ButtonRelease-1>", lambda _e: self._drag(False))
         self.percent_label = ttk.Label(frame, text="–", width=6, anchor="e")
         self.percent_label.grid(row=1, column=2, pady=(14, 4))
 
@@ -349,6 +348,7 @@ class App:
             self.remote.stop()
         self.remember_host(host)
         self.ui_queue = queue.Queue()   # drop messages from the old connection
+        self.request_seq = 0            # fresh Remote starts its own seq at 0 too
         self._enable(False)
         self.remote = Remote(host, self.ui_queue)
         self.remote.start()
@@ -368,13 +368,13 @@ class App:
         if percent == self.remote_volume or not self.remote:
             return                      # programmatic update, nothing to send
         self.remote_volume = percent
-        self.last_user_change = time.monotonic()
-        self.remote.set_volume(percent)
+        self.request_seq += 1
+        self.remote.set_volume(percent, self.request_seq)
 
     def on_mute(self):
         if self.remote:
-            self.last_user_change = time.monotonic()
-            self.remote.set_mute(self.mute_var.get())
+            self.request_seq += 1
+            self.remote.set_mute(self.mute_var.get(), self.request_seq)
 
     def nudge_volume(self, delta):
         if not self.remote:
@@ -387,10 +387,6 @@ class App:
             return
         self.mute_var.set(not self.mute_var.get())
         self.on_mute()
-
-    def _drag(self, active):
-        self.dragging = active
-        self.last_user_change = time.monotonic()
 
     # -- global shortcuts -----------------------------------------------------
     def init_hotkeys(self):
@@ -487,7 +483,7 @@ class App:
                                        foreground="dark green" if ok else "firebrick")
                     self._enable(ok)
                 elif message[0] == "state":
-                    self.show_state(message[1], message[2])
+                    self.show_state(message[1], message[2], message[3])
         except queue.Empty:
             pass
         try:
@@ -510,9 +506,11 @@ class App:
         elif kind == "exit":
             self.quit_app()
 
-    def show_state(self, percent, muted):
-        # Don't fight the user: ignore remote readings mid-adjustment.
-        if self.dragging or time.monotonic() - self.last_user_change < 1.0:
+    def show_state(self, percent, muted, seq):
+        # Ignore readings that predate our latest command (e.g. an idle poll
+        # that was already in flight when the user acted) rather than guessing
+        # from elapsed time, which a slow link can outrace.
+        if seq < self.request_seq:
             return
         self.remote_volume = min(percent, 100)
         self.volume_var.set(self.remote_volume)
