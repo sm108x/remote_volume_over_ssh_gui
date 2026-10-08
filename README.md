@@ -20,16 +20,14 @@ GUI for controlling audio volume on a remote PipeWire machine over SSH.
 - Remote: PipeWire + WirePlumber (`wpctl`), with the target user logged in
   to a desktop session.
 
-Install the Python dependencies:
-
-```sh
-pip install -r requirements.txt
-```
-
-If that fails with an "externally-managed-environment" error (common
-on Debian/Ubuntu/Mint), run `./install.sh` instead -- it offers a
-choice of a virtual environment, `--break-system-packages`, or apt
-packages, and installs accordingly.
+Install the Python dependencies by running `./install.sh` -- it offers a
+choice of apt packages (recommended: prebuilt, nothing to compile), a
+virtual environment built on top of those apt packages, or plain
+`pip install -r requirements.txt` forced with `--break-system-packages`.
+Plain `pip install` on Debian/Ubuntu/Mint either refuses outright
+("externally-managed-environment") or ends up compiling `evdev`, which
+fails unless `python3-dev` and `build-essential` are installed;
+`./install.sh` handles both cases for you.
 
 ## Usage
 
