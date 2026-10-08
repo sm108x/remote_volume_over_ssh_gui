@@ -8,7 +8,7 @@ GUI for controlling audio volume on a remote PipeWire machine over SSH.
 - Global keyboard shortcuts (configurable) to nudge volume up/down and
   toggle mute, regardless of which window has focus.
 - Minimises to a system tray icon on close; right-click the tray icon to
-  show the window again or exit.
+  show the window again or exit, left-click for a quick volume/mute popup.
 - Remembers previously used hosts in a dropdown for quick reconnection.
 
 ## Requirements
@@ -58,4 +58,8 @@ to render into -- no error is raised, it's just invisible. On Cinnamon:
 - Install the StatusNotifierItem watcher service if it's missing:
   `sudo apt install ayatana-indicator-application`.
 - Force a different backend to test: `PYSTRAY_BACKEND=xorg python3
-  remote_volume.py` (other values: `appindicator`, `gtk`).
+  remote_volume.py` (other values: `appindicator`, `gtk`). The app defaults
+  to `gtk` itself (set `PYSTRAY_BACKEND` to override), since it was the only
+  backend that worked reliably against Cinnamon's legacy "System tray"
+  applet in testing -- `appindicator` and the hand-rolled `xorg` backend
+  were both unresponsive to clicks there.

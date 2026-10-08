@@ -22,6 +22,7 @@ Requirements
 """
 
 import json
+import os
 import queue
 import re
 import subprocess
@@ -32,6 +33,12 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from pynput import keyboard
+
+# gtk is the most reliable backend against Cinnamon's legacy XEmbed tray
+# ("System tray" applet) -- appindicator and the hand-rolled xorg backend
+# were both unresponsive to clicks there. setdefault() so an explicit
+# PYSTRAY_BACKEND still overrides this for testing other backends.
+os.environ.setdefault("PYSTRAY_BACKEND", "gtk")
 import pystray
 from PIL import Image, ImageDraw
 
@@ -297,6 +304,8 @@ class App:
         self.action_queue = queue.Queue()
         self.hotkey_listener = None
         self.tray_icon = None
+        self.volume_popup = None
+        self.volume_popup_trace = None
         self.remote_volume = None     # last value reported by the remote
         self.request_seq = 0          # bumped on every command we send; lets
                                        # show_state ignore readings that predate it
@@ -467,6 +476,12 @@ class App:
                 make_tray_image(),
                 "Remote Volume",
                 menu=pystray.Menu(
+                    pystray.MenuItem(
+                        "Volume",
+                        lambda icon, item: self.action_queue.put(("popup_volume",)),
+                        default=True,
+                        visible=False,
+                    ),
                     pystray.MenuItem("Show", lambda icon, item: self.action_queue.put(("show",))),
                     pystray.MenuItem("Exit", lambda icon, item: self.action_queue.put(("exit",))),
                 ),
@@ -493,6 +508,50 @@ class App:
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
+
+    def toggle_volume_popup(self):
+        if not self.remote:
+            return
+        if self.volume_popup:
+            self.close_volume_popup()
+            return
+
+        popup = tk.Toplevel(self.root)
+        self.volume_popup = popup
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        frame = ttk.Frame(popup, padding=10, relief="raised", borderwidth=1)
+        frame.grid()
+
+        percent_var = tk.StringVar(value=f"{round(self.volume_var.get())}%")
+        self.volume_popup_trace = self.volume_var.trace_add(
+            "write", lambda *_a: percent_var.set(f"{round(self.volume_var.get())}%")
+        )
+        ttk.Label(frame, textvariable=percent_var).grid(row=0, column=0, pady=(0, 4))
+        ttk.Scale(
+            frame, from_=100, to=0, orient="vertical", variable=self.volume_var,
+            length=120, command=self.on_slide,
+        ).grid(row=1, column=0)
+        ttk.Checkbutton(
+            frame, text="Mute", variable=self.mute_var, command=self.on_mute
+        ).grid(row=2, column=0, pady=(6, 0))
+
+        popup.bind("<FocusOut>", lambda _e: self.close_volume_popup())
+        popup.bind("<Escape>", lambda _e: self.close_volume_popup())
+        popup.update_idletasks()
+        x = self.root.winfo_pointerx() - popup.winfo_width() // 2
+        y = self.root.winfo_pointery() - popup.winfo_height() - 10
+        popup.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        popup.lift()
+        popup.focus_force()
+
+    def close_volume_popup(self):
+        if not self.volume_popup:
+            return
+        self.volume_var.trace_remove("write", self.volume_popup_trace)
+        self.volume_popup.destroy()
+        self.volume_popup = None
+        self.volume_popup_trace = None
 
     def on_close(self):
         if self.tray_icon:
@@ -542,6 +601,8 @@ class App:
             self.show_window()
         elif kind == "exit":
             self.quit_app()
+        elif kind == "popup_volume":
+            self.toggle_volume_popup()
 
     def show_state(self, percent, muted, seq):
         # Ignore readings that predate our latest command (e.g. an idle poll
