@@ -46,10 +46,14 @@ MAX_HOST_HISTORY = 15
 CONFIG_DIR = Path.home() / ".config" / "remote_volume_over_ssh_gui"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# Ctrl+Alt+Up/Down/M would collide with Cinnamon/GNOME's default
+# workspace-switching shortcuts, whose window-manager-level key grab wins
+# the race and silently swallows the keypress before pynput's listener
+# sees it. A triple-modifier combo is far less likely to already be bound.
 DEFAULT_HOTKEYS = {
-    "volume_up": "<ctrl>+<alt>+<up>",
-    "volume_down": "<ctrl>+<alt>+<down>",
-    "mute_toggle": "<ctrl>+<alt>+m",
+    "volume_up": "<ctrl>+<alt>+<shift>+<up>",
+    "volume_down": "<ctrl>+<alt>+<shift>+<down>",
+    "mute_toggle": "<ctrl>+<alt>+<shift>+m",
 }
 
 # Runs on the remote: make sure the PipeWire socket can be found, then become
@@ -249,8 +253,14 @@ class ShortcutsDialog(tk.Toplevel):
 
         ttk.Label(
             frame,
-            text="Modifiers: <ctrl> <alt> <shift> <cmd>  e.g. <ctrl>+<alt>+<up>",
+            text=(
+                "Modifiers: <ctrl> <alt> <shift> <cmd>  e.g. <ctrl>+<alt>+<up>\n"
+                "Avoid combos your desktop environment already binds (e.g.\n"
+                "Cinnamon/GNOME's Ctrl+Alt+arrows for workspace switching) --\n"
+                "its grab wins and the shortcut here will silently never fire."
+            ),
             foreground="gray",
+            justify="left",
         ).grid(row=len(self.FIELDS), column=0, columnspan=2, sticky="w", pady=(6, 10))
 
         buttons = ttk.Frame(frame)
@@ -389,6 +399,17 @@ class App:
         except Exception as exc:
             self.hotkey_listener = None
             print(f"Global shortcuts unavailable: {exc}", file=sys.stderr)
+        else:
+            combos = ", ".join(self.config["hotkeys"].values())
+            print(
+                f"Global shortcuts active: {combos}\n"
+                "If a shortcut doesn't fire, your desktop environment likely "
+                "already binds that combo (e.g. Cinnamon/GNOME bind "
+                "Ctrl+Alt+Up/Down to workspace switching) and its window-manager "
+                "grab wins before this listener sees the keypress -- check "
+                "System Settings > Keyboard > Shortcuts, or pick a different "
+                "combo via the Shortcuts… button."
+            )
 
     def apply_hotkeys(self, hotkeys):
         parsed = {}
