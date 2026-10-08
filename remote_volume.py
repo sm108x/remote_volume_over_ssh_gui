@@ -10,14 +10,19 @@ Features
   - Global keyboard shortcuts (configurable) to nudge volume and toggle mute
     regardless of which window has focus.
   - Minimises to a system tray icon on close; right-click it to show the
-    window again or exit the app.
+    window again or exit the app, left-click or scroll over it to adjust
+    volume directly.
   - Remembers previously used hosts in a dropdown for quick reconnection.
+  - Optional autostart on login, starting with the window hidden by
+    default; connection failures show an on-screen indicator (when hidden)
+    and a desktop notification.
 
 Requirements
   local : Python 3 with Tkinter (Mint/Ubuntu: sudo apt install python3-tk),
           OpenSSH client, key-based login to the remote (no password prompt),
           pynput + pystray + Pillow (pip install pynput pystray pillow),
-          a running X server (global hotkeys and the tray icon need one).
+          a running X server (global hotkeys and the tray icon need one),
+          notify-send (libnotify-bin) for desktop notifications, optional.
   remote: PipeWire + WirePlumber (wpctl), user logged in to the desktop.
 """
 
@@ -45,12 +50,15 @@ from PIL import Image, ImageDraw
 SINK = "@DEFAULT_AUDIO_SINK@"
 SENTINEL = "__RV_DONE__"
 POLL_SECONDS = 2        # how often to re-read the remote volume
-RETRY_SECONDS = 5       # wait between reconnect attempts
+RETRY_SECONDS = 5       # fast retry, once a connection has succeeded at least once
+DEFAULT_RETRY_MINUTES = 2.0  # slow retry while it has never yet connected (e.g. at login)
 VOLUME_STEP = 5          # percent per global-hotkey nudge
 MAX_HOST_HISTORY = 15
 
 CONFIG_DIR = Path.home() / ".config" / "remote_volume_over_ssh_gui"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+AUTOSTART_DIR = Path.home() / ".config" / "autostart"
+AUTOSTART_FILE = AUTOSTART_DIR / "remote-volume-over-ssh-gui.desktop"
 
 # Any Ctrl+Alt(+Shift)+arrow combo collides with Cinnamon/GNOME's default
 # workspace-switching ("switch-to-workspace-up/down") and window-moving
@@ -76,7 +84,10 @@ VOLUME_RE = re.compile(r"Volume:\s*([\d.]+)(\s*\[MUTED\])?")
 
 
 def load_config():
-    config = {"hosts": [], "last_host": "", "hotkeys": dict(DEFAULT_HOTKEYS)}
+    config = {
+        "hosts": [], "last_host": "", "hotkeys": dict(DEFAULT_HOTKEYS),
+        "start_hidden": True, "retry_minutes": DEFAULT_RETRY_MINUTES,
+    }
     try:
         data = json.loads(CONFIG_FILE.read_text())
     except (OSError, ValueError):
@@ -88,6 +99,11 @@ def load_config():
         {k: v for k, v in data.get("hotkeys", {}).items() if k in DEFAULT_HOTKEYS and v}
     )
     config["hotkeys"] = hotkeys
+    if isinstance(data.get("start_hidden"), bool):
+        config["start_hidden"] = data["start_hidden"]
+    retry_minutes = data.get("retry_minutes")
+    if isinstance(retry_minutes, (int, float)) and retry_minutes > 0:
+        config["retry_minutes"] = retry_minutes
     return config
 
 
@@ -97,6 +113,40 @@ def save_config(config):
         CONFIG_FILE.write_text(json.dumps(config, indent=2))
     except OSError:
         pass
+
+
+def _desktop_quote(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def is_autostart_enabled():
+    return AUTOSTART_FILE.exists()
+
+
+def set_autostart(enabled):
+    """Writes/removes an XDG autostart .desktop entry (no root needed).
+
+    The file's existence is the single source of truth -- not mirrored into
+    config.json -- so it can't drift out of sync with what's actually
+    registered, e.g. if removed by hand outside the app.
+    """
+    if not enabled:
+        try:
+            AUTOSTART_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
+    script = Path(__file__).resolve()
+    exec_line = f"{_desktop_quote(sys.executable)} {_desktop_quote(script)}"
+    AUTOSTART_FILE.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Remote Volume\n"
+        f"Exec={exec_line}\n"
+        "X-GNOME-Autostart-enabled=true\n"
+        "Terminal=false\n"
+    )
 
 
 def make_tray_image():
@@ -118,7 +168,7 @@ def make_tray_image():
 class Remote(threading.Thread):
     """Owns the persistent ssh process. All remote I/O happens on this thread."""
 
-    def __init__(self, host, ui_queue):
+    def __init__(self, host, ui_queue, slow_retry_seconds=RETRY_SECONDS):
         super().__init__(daemon=True)
         self.host = host
         self.ui = ui_queue
@@ -126,6 +176,8 @@ class Remote(threading.Thread):
         self.stopping = threading.Event()
         self.proc = None
         self.last_seq = 0   # sequence number of the last command actually applied
+        self.slow_retry_seconds = slow_retry_seconds
+        self.ever_connected = False
 
     # -- called from the GUI thread ---------------------------------------
     def set_volume(self, percent, seq):
@@ -141,22 +193,29 @@ class Remote(threading.Thread):
     # -- worker thread ------------------------------------------------------
     def run(self):
         while not self.stopping.is_set():
+            wait = RETRY_SECONDS
             try:
                 self._status(f"Connecting to {self.host}…", False)
                 self._connect()
+                self.ever_connected = True
                 self._status(f"Connected to {self.host}", True)
                 self._refresh()
                 self._loop()
             except ConnectionError as exc:
                 if self.stopping.is_set():
                     break
+                if not self.ever_connected:
+                    # Hasn't connected even once yet -- likely just after
+                    # login, before the remote machine or its desktop
+                    # session is up. Don't hammer it every few seconds.
+                    wait = self.slow_retry_seconds
                 detail = str(exc) or "connection closed"
                 self._status(
-                    f"Disconnected: {detail} (retrying in {RETRY_SECONDS}s)", False
+                    f"Disconnected: {detail} (retrying in {wait:.0f}s)", False
                 )
             finally:
                 self._kill()
-            self.stopping.wait(RETRY_SECONDS)
+            self.stopping.wait(wait)
 
     def _connect(self):
         try:
@@ -295,6 +354,78 @@ class ShortcutsDialog(tk.Toplevel):
         self.destroy()
 
 
+class SettingsDialog(tk.Toplevel):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.title("Settings")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        frame = ttk.Frame(self, padding=12)
+        frame.grid()
+
+        self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        ttk.Checkbutton(
+            frame, text="Start automatically on login", variable=self.autostart_var
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        self.start_hidden_var = tk.BooleanVar(
+            value=app.config.get("start_hidden", True)
+        )
+        ttk.Checkbutton(
+            frame, text="Start with the main window hidden",
+            variable=self.start_hidden_var,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        retry_row = ttk.Frame(frame)
+        retry_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(retry_row, text="Retry every").grid(row=0, column=0)
+        self.retry_var = tk.StringVar(
+            value=str(app.config.get("retry_minutes", DEFAULT_RETRY_MINUTES))
+        )
+        ttk.Entry(retry_row, textvariable=self.retry_var, width=6).grid(
+            row=0, column=1, padx=4
+        )
+        ttk.Label(retry_row, text="minutes if never yet connected").grid(
+            row=0, column=2
+        )
+
+        ttk.Label(
+            frame,
+            text=(
+                "Once connected at least once, reconnects after a drop stay\n"
+                "fast (5s). The interval above only applies before that first\n"
+                "success -- e.g. right after login, before the remote machine\n"
+                "or its desktop session is up."
+            ),
+            foreground="gray",
+            justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 10))
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
+        ttk.Button(buttons, text="Save", command=self.save).grid(row=0, column=1)
+
+    def save(self):
+        try:
+            retry_minutes = float(self.retry_var.get())
+            if retry_minutes <= 0:
+                raise ValueError("must be greater than 0")
+        except ValueError as exc:
+            messagebox.showerror("Invalid value", f"Retry interval: {exc}", parent=self)
+            return
+        try:
+            set_autostart(self.autostart_var.get())
+        except OSError as exc:
+            messagebox.showerror("Autostart", str(exc), parent=self)
+            return
+        self.app.apply_settings(retry_minutes, self.start_hidden_var.get())
+        self.destroy()
+
+
 class App:
     def __init__(self, root, config, initial_host):
         self.root = root
@@ -313,6 +444,7 @@ class App:
         self.remote_volume = None     # last value reported by the remote
         self.request_seq = 0          # bumped on every command we send; lets
                                        # show_state ignore readings that predate it
+        self.last_status_ok = None    # None = unknown yet; edge-triggers failure feedback
 
         root.title("Remote Volume")
         root.resizable(False, False)
@@ -343,6 +475,9 @@ class App:
             frame, text="Mute", variable=self.mute_var, command=self.on_mute
         )
         self.mute_box.grid(row=2, column=0, sticky="w")
+        ttk.Button(frame, text="Settings…", command=self.open_settings_dialog).grid(
+            row=2, column=1
+        )
         ttk.Button(frame, text="Shortcuts…", command=self.open_shortcuts_dialog).grid(
             row=2, column=2, sticky="e"
         )
@@ -358,6 +493,9 @@ class App:
         self.init_tray()
         self.init_hotkeys()
 
+        if self.config.get("start_hidden", True):
+            self.root.withdraw()
+
         if initial_host:
             self.connect()
 
@@ -371,8 +509,10 @@ class App:
         self.remember_host(host)
         self.ui_queue = queue.Queue()   # drop messages from the old connection
         self.request_seq = 0            # fresh Remote starts its own seq at 0 too
+        self.last_status_ok = None      # fresh connection, re-arm failure feedback
         self._enable(False)
-        self.remote = Remote(host, self.ui_queue)
+        slow_retry = self.config.get("retry_minutes", DEFAULT_RETRY_MINUTES) * 60
+        self.remote = Remote(host, self.ui_queue, slow_retry)
         self.remote.start()
 
     def remember_host(self, host):
@@ -473,6 +613,16 @@ class App:
 
     def open_shortcuts_dialog(self):
         ShortcutsDialog(self.root, self)
+
+    def open_settings_dialog(self):
+        SettingsDialog(self.root, self)
+
+    def apply_settings(self, retry_minutes, start_hidden):
+        self.config["retry_minutes"] = retry_minutes
+        self.config["start_hidden"] = start_hidden
+        save_config(self.config)
+        if self.remote:
+            self.remote.slow_retry_seconds = retry_minutes * 60
 
     # -- system tray ------------------------------------------------------------
     def init_tray(self):
@@ -648,18 +798,29 @@ class App:
     def show_volume_osd(self):
         # Brief, auto-dismissing indicator for scroll/hotkey-triggered
         # changes, so there's feedback even when the main window is hidden.
+        percent = round(self.volume_var.get())
+        text = f"{percent}%" + ("  (muted)" if self.mute_var.get() else "")
+        self._show_osd(text, duration_ms=1200)
+
+    def show_connection_osd(self, text):
+        # Same mechanism, for connection failures -- only called when the
+        # main window is hidden, so there's still *some* visible feedback.
+        self._show_osd(text, duration_ms=4000)
+
+    def _show_osd(self, text, duration_ms):
         if self.volume_osd is None:
             osd = tk.Toplevel(self.root)
             osd.overrideredirect(True)
             osd.attributes("-topmost", True)
             frame = ttk.Frame(osd, padding=(14, 6), relief="raised", borderwidth=1)
             frame.grid()
-            self.volume_osd_label = ttk.Label(frame, font=("TkDefaultFont", 12, "bold"))
+            self.volume_osd_label = ttk.Label(
+                frame, font=("TkDefaultFont", 12, "bold"),
+                wraplength=260, justify="center",
+            )
             self.volume_osd_label.grid()
             self.volume_osd = osd
 
-        percent = round(self.volume_var.get())
-        text = f"{percent}%" + ("  (muted)" if self.mute_var.get() else "")
         self.volume_osd_label.config(text=text)
         self.volume_osd.deiconify()
         self._position_near_pointer(self.volume_osd, gap=8)
@@ -667,7 +828,7 @@ class App:
 
         if self.volume_osd_hide_job:
             self.root.after_cancel(self.volume_osd_hide_job)
-        self.volume_osd_hide_job = self.root.after(1200, self._hide_volume_osd)
+        self.volume_osd_hide_job = self.root.after(duration_ms, self._hide_volume_osd)
 
     def _hide_volume_osd(self):
         if self.volume_osd:
@@ -701,6 +862,7 @@ class App:
                     self.status.config(text=text,
                                        foreground="dark green" if ok else "firebrick")
                     self._enable(ok)
+                    self.handle_status_change(text, ok)
                 elif message[0] == "state":
                     self.show_state(message[1], message[2], message[3])
         except queue.Empty:
@@ -739,6 +901,34 @@ class App:
         self.volume_var.set(self.remote_volume)
         self.percent_label.config(text=f"{percent}%")
         self.mute_var.set(muted)
+
+    def handle_status_change(self, text, ok):
+        # "Connecting to ..." is transient (sent at the start of every retry,
+        # successful or not) and ok=False only because it isn't a success
+        # yet -- not itself a failure, so it must not trip the edge below.
+        if not ok and text.startswith("Connecting to"):
+            return
+        newly_failed = (not ok) and (self.last_status_ok is not False)
+        self.last_status_ok = ok
+        if newly_failed:
+            if not self.root.winfo_viewable():
+                self.show_connection_osd(text)
+            self.notify_connection_issue(text)
+
+    def notify_connection_issue(self, text):
+        # Off the GUI thread: a hung notification daemon/D-Bus call must not
+        # freeze the window, matching why all SSH I/O already runs in Remote
+        # rather than here.
+        threading.Thread(target=self._send_notification, args=(text,), daemon=True).start()
+
+    def _send_notification(self, text):
+        try:
+            subprocess.run(
+                ["notify-send", "-a", "Remote Volume", "Remote Volume", text],
+                check=False, timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"Notification failed: {exc}", file=sys.stderr)
 
     def _enable(self, on):
         state = ["!disabled"] if on else ["disabled"]

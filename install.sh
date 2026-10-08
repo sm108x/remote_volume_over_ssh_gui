@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APT_PKGS=(python3-pynput python3-pystray python3-pil python3-xlib python3-evdev)
+APT_PKGS=(python3-pynput python3-pystray python3-pil python3-xlib python3-evdev libnotify-bin)
 
 echo "Install Python dependencies (pynput, pystray, pillow) how?"
 echo "  1) apt packages (recommended -- prebuilt, nothing to compile)"
@@ -30,7 +30,7 @@ case "$choice" in
     echo "Done. Run: .venv/bin/python remote_volume.py"
     ;;
   3)
-    sudo apt install -y python3-dev build-essential
+    sudo apt install -y python3-dev build-essential libnotify-bin
     pip install --break-system-packages -r requirements.txt
     echo "Done. Run: python3 remote_volume.py"
     ;;

@@ -12,6 +12,9 @@ GUI for controlling audio volume on a remote PipeWire machine over SSH.
   scroll over it to nudge volume directly (gtk tray backend only). Scroll
   and hotkey changes show a brief on-screen volume indicator.
 - Remembers previously used hosts in a dropdown for quick reconnection.
+- Optional autostart on login (Settings…), starting with the window
+  hidden by default. Connection failures show an on-screen indicator when
+  hidden and always send a desktop notification.
 
 ## Requirements
 
@@ -19,6 +22,8 @@ GUI for controlling audio volume on a remote PipeWire machine over SSH.
   client, and key-based login to the remote host (no password prompt).
 - Local: a running X server — global shortcuts and the tray icon both need
   one (this does not work headless or under Wayland-only sessions).
+- Local: `notify-send` (`libnotify-bin`) for desktop notifications on
+  connection failure -- optional, degrades to a log line without it.
 - Remote: PipeWire + WirePlumber (`wpctl`), with the target user logged in
   to a desktop session.
 
@@ -40,6 +45,13 @@ python3 remote_volume.py [user@host]
 If no host is given, the last-used host is loaded automatically. Previously
 used hosts are kept in a dropdown; config and connection history are stored
 in `~/.config/remote_volume_over_ssh_gui/config.json`.
+
+Click "Settings…" to enable autostart on login, toggle whether the window
+starts hidden (default: yes), or change the slow-retry interval used only
+before the app has connected even once (e.g. right after login, before the
+remote machine or its desktop session is up) -- once connected at least
+once, reconnects after a drop always happen every 5s, regardless of that
+setting.
 
 Click "Shortcuts…" in the window to change the global hotkeys (defaults:
 `Ctrl+Alt+Shift+U`, `Ctrl+Alt+Shift+D`, `Ctrl+Alt+Shift+M` for volume
