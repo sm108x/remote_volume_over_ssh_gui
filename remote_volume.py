@@ -45,13 +45,16 @@ MAX_HOST_HISTORY = 15
 CONFIG_DIR = Path.home() / ".config" / "remote_volume_over_ssh_gui"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-# Ctrl+Alt+Up/Down/M would collide with Cinnamon/GNOME's default
-# workspace-switching shortcuts, whose window-manager-level key grab wins
-# the race and silently swallows the keypress before pynput's listener
-# sees it. A triple-modifier combo is far less likely to already be bound.
+# Any Ctrl+Alt(+Shift)+arrow combo collides with Cinnamon/GNOME's default
+# workspace-switching ("switch-to-workspace-up/down") and window-moving
+# ("move-to-workspace-up/down") shortcuts -- adding modifiers doesn't help,
+# since both are bound by default. The window-manager's key grab wins the
+# race and silently swallows the keypress before pynput's listener sees
+# it. Letter/number keys aren't bound to anything by default, so they're
+# used here instead of arrows.
 DEFAULT_HOTKEYS = {
-    "volume_up": "<ctrl>+<alt>+<shift>+<up>",
-    "volume_down": "<ctrl>+<alt>+<shift>+<down>",
+    "volume_up": "<ctrl>+<alt>+<shift>+u",
+    "volume_down": "<ctrl>+<alt>+<shift>+d",
     "mute_toggle": "<ctrl>+<alt>+<shift>+m",
 }
 
@@ -255,10 +258,11 @@ class ShortcutsDialog(tk.Toplevel):
         ttk.Label(
             frame,
             text=(
-                "Modifiers: <ctrl> <alt> <shift> <cmd>  e.g. <ctrl>+<alt>+<up>\n"
-                "Avoid combos your desktop environment already binds (e.g.\n"
-                "Cinnamon/GNOME's Ctrl+Alt+arrows for workspace switching) --\n"
-                "its grab wins and the shortcut here will silently never fire."
+                "Modifiers: <ctrl> <alt> <shift> <cmd>  e.g. <ctrl>+<alt>+<shift>+u\n"
+                "Avoid arrow keys: Cinnamon/GNOME bind every Ctrl+Alt(+Shift)+arrow\n"
+                "combo by default (workspace switching / moving windows between\n"
+                "workspaces) -- that grab wins and the shortcut here silently\n"
+                "never fires. Letter/number keys are unclaimed and safe to use."
             ),
             foreground="gray",
             justify="left",
@@ -413,11 +417,14 @@ class App:
             print(
                 f"Global shortcuts active: {combos}\n"
                 "If a shortcut doesn't fire, your desktop environment likely "
-                "already binds that combo (e.g. Cinnamon/GNOME bind "
-                "Ctrl+Alt+Up/Down to workspace switching) and its window-manager "
-                "grab wins before this listener sees the keypress -- check "
-                "System Settings > Keyboard > Shortcuts, or pick a different "
-                "combo via the Shortcuts… button."
+                "already binds that combo and its window-manager grab wins "
+                "before this listener sees the keypress. Arrow keys are "
+                "especially prone to this on Cinnamon/GNOME -- Ctrl+Alt+arrow "
+                "and Ctrl+Alt+Shift+arrow are both bound by default (workspace "
+                "switching and moving a window between workspaces), so prefer "
+                "letter/number keys. Check System Settings > Keyboard > "
+                "Shortcuts, or pick a different combo via the Shortcuts… "
+                "button."
             )
 
     def apply_hotkeys(self, hotkeys):

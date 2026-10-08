@@ -40,4 +40,8 @@ used hosts are kept in a dropdown; config and connection history are stored
 in `~/.config/remote_volume_over_ssh_gui/config.json`.
 
 Click "Shortcuts…" in the window to change the global hotkeys (defaults:
-`Ctrl+Alt+Up`, `Ctrl+Alt+Down`, `Ctrl+Alt+M` for volume up/down/mute).
+`Ctrl+Alt+Shift+U`, `Ctrl+Alt+Shift+D`, `Ctrl+Alt+Shift+M` for volume
+up/down/mute). Avoid arrow keys for these: Cinnamon/GNOME bind every
+`Ctrl+Alt(+Shift)+arrow` combo by default (workspace switching and moving
+windows between workspaces), and that window-manager grab silently wins
+over this app's listener.
