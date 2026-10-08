@@ -32,7 +32,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from pynput import keyboard
+from pynput import keyboard, mouse
 
 # gtk is the most reliable backend against Cinnamon's legacy XEmbed tray
 # ("System tray" applet) -- appindicator and the hand-rolled xorg backend
@@ -306,6 +306,10 @@ class App:
         self.tray_icon = None
         self.volume_popup = None
         self.volume_popup_trace = None
+        self.popup_click_listener = None
+        self.volume_osd = None
+        self.volume_osd_label = None
+        self.volume_osd_hide_job = None
         self.remote_volume = None     # last value reported by the remote
         self.request_seq = 0          # bumped on every command we send; lets
                                        # show_state ignore readings that predate it
@@ -411,6 +415,7 @@ class App:
         self.volume_var.set(percent)
         self.percent_label.config(text=f"{percent}%")
         self.send_volume(percent)
+        self.show_volume_osd()
 
     def toggle_mute(self):
         if not self.remote:
@@ -418,6 +423,7 @@ class App:
         muted = not self.mute_var.get()
         self.mute_var.set(muted)
         self.send_mute(muted)
+        self.show_volume_osd()
 
     # -- global shortcuts -----------------------------------------------------
     def init_hotkeys(self):
@@ -570,23 +576,7 @@ class App:
 
         popup.bind("<FocusOut>", lambda _e: self.close_volume_popup())
         popup.bind("<Escape>", lambda _e: self.close_volume_popup())
-        popup.update_idletasks()
-
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        gap = 40
-        pointer_x = self.root.winfo_pointerx()
-        pointer_y = self.root.winfo_pointery()
-        # Push away from the icon toward screen center, not just off its edge:
-        # a tray near the top gets the popup below it, and vice versa.
-        if pointer_y < screen_h / 2:
-            y = pointer_y + gap
-        else:
-            y = pointer_y - popup.winfo_height() - gap
-        x = pointer_x - popup.winfo_width() // 2
-        x = max(0, min(x, screen_w - popup.winfo_width()))
-        y = max(0, min(y, screen_h - popup.winfo_height()))
-        popup.geometry(f"+{x}+{y}")
+        self._position_near_pointer(popup, gap=8)
 
         popup.lift()
         popup.update()          # ensure the window is actually mapped first --
@@ -594,6 +584,29 @@ class App:
         # focus otherwise, so <FocusOut> alone can miss it. Delay the first
         # check: focus transfer is asynchronous and may not have landed yet.
         self.root.after(200, self._poll_popup_focus)
+
+        # Focus alone isn't enough either: clicking a Cinnamon panel applet
+        # doesn't necessarily take keyboard focus away from an
+        # overrideredirect window, so that click wouldn't trip the poll
+        # above. Passively watch for ANY click anywhere (via pynput, the
+        # same mechanism the global hotkeys already use) and close if it
+        # landed outside the popup -- this doesn't swallow the click, it
+        # still reaches its real target too.
+        self.popup_click_listener = mouse.Listener(on_click=self._on_global_click)
+        self.popup_click_listener.start()
+
+    def _on_global_click(self, x, y, button, pressed):
+        if pressed:
+            self.action_queue.put(("popup_click_check", x, y))
+
+    def _check_popup_click(self, x, y):
+        popup = self.volume_popup
+        if not popup:
+            return
+        left, top = popup.winfo_rootx(), popup.winfo_rooty()
+        right, bottom = left + popup.winfo_width(), top + popup.winfo_height()
+        if not (left <= x <= right and top <= y <= bottom):
+            self.close_volume_popup()
 
     def _poll_popup_focus(self):
         if not self.volume_popup:
@@ -607,10 +620,59 @@ class App:
     def close_volume_popup(self):
         if not self.volume_popup:
             return
+        if self.popup_click_listener:
+            self.popup_click_listener.stop()
+            self.popup_click_listener = None
         self.volume_var.trace_remove("write", self.volume_popup_trace)
         self.volume_popup.destroy()
         self.volume_popup = None
         self.volume_popup_trace = None
+
+    def _position_near_pointer(self, window, gap):
+        window.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        pointer_x = self.root.winfo_pointerx()
+        pointer_y = self.root.winfo_pointery()
+        # Push toward screen center, not just off the icon's edge: a tray
+        # near the top gets the window below it, and vice versa.
+        if pointer_y < screen_h / 2:
+            y = pointer_y + gap
+        else:
+            y = pointer_y - window.winfo_height() - gap
+        x = pointer_x - window.winfo_width() // 2
+        x = max(0, min(x, screen_w - window.winfo_width()))
+        y = max(0, min(y, screen_h - window.winfo_height()))
+        window.geometry(f"+{x}+{y}")
+
+    def show_volume_osd(self):
+        # Brief, auto-dismissing indicator for scroll/hotkey-triggered
+        # changes, so there's feedback even when the main window is hidden.
+        if self.volume_osd is None:
+            osd = tk.Toplevel(self.root)
+            osd.overrideredirect(True)
+            osd.attributes("-topmost", True)
+            frame = ttk.Frame(osd, padding=(14, 6), relief="raised", borderwidth=1)
+            frame.grid()
+            self.volume_osd_label = ttk.Label(frame, font=("TkDefaultFont", 12, "bold"))
+            self.volume_osd_label.grid()
+            self.volume_osd = osd
+
+        percent = round(self.volume_var.get())
+        text = f"{percent}%" + ("  (muted)" if self.mute_var.get() else "")
+        self.volume_osd_label.config(text=text)
+        self.volume_osd.deiconify()
+        self._position_near_pointer(self.volume_osd, gap=8)
+        self.volume_osd.lift()
+
+        if self.volume_osd_hide_job:
+            self.root.after_cancel(self.volume_osd_hide_job)
+        self.volume_osd_hide_job = self.root.after(1200, self._hide_volume_osd)
+
+    def _hide_volume_osd(self):
+        if self.volume_osd:
+            self.volume_osd.withdraw()
+        self.volume_osd_hide_job = None
 
     def on_close(self):
         if self.tray_icon:
@@ -623,6 +685,8 @@ class App:
             self.remote.stop()
         if self.hotkey_listener:
             self.hotkey_listener.stop()
+        if self.popup_click_listener:
+            self.popup_click_listener.stop()
         if self.tray_icon:
             self.tray_icon.stop()
         self.root.destroy()
@@ -662,6 +726,8 @@ class App:
             self.quit_app()
         elif kind == "popup_volume":
             self.toggle_volume_popup()
+        elif kind == "popup_click_check":
+            self._check_popup_click(action[1], action[2])
 
     def show_state(self, percent, muted, seq):
         # Ignore readings that predate our latest command (e.g. an idle poll
