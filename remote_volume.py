@@ -500,9 +500,41 @@ class App:
                 "PYSTRAY_BACKEND=xorg python3 remote_volume.py "
                 "(other values: appindicator, gtk)."
             )
+            if self._bind_tray_scroll(icon):
+                print("Scroll over the tray icon to adjust volume.")
+            else:
+                print(
+                    "Scroll-to-adjust-volume needs the gtk tray backend; not "
+                    "available on this one."
+                )
         except Exception as exc:
             self.tray_icon = None
             print(f"Tray icon unavailable: {exc}", file=sys.stderr)
+
+    def _bind_tray_scroll(self, icon):
+        # pystray has no cross-backend scroll API; gtk's underlying
+        # Gtk.StatusIcon supports it directly, so reach into it when present.
+        status_icon = getattr(icon, "_status_icon", None)
+        if status_icon is None:
+            return False
+        try:
+            from gi.repository import Gdk
+        except ImportError:
+            return False
+
+        def on_scroll(_status_icon, event):
+            if event.direction == Gdk.ScrollDirection.UP:
+                self.action_queue.put(("vol_up",))
+            elif event.direction == Gdk.ScrollDirection.DOWN:
+                self.action_queue.put(("vol_down",))
+            elif event.direction == Gdk.ScrollDirection.SMOOTH:
+                if event.delta_y < 0:
+                    self.action_queue.put(("vol_up",))
+                elif event.delta_y > 0:
+                    self.action_queue.put(("vol_down",))
+
+        status_icon.connect("scroll-event", on_scroll)
+        return True
 
     def show_window(self):
         self.root.deiconify()
@@ -539,11 +571,38 @@ class App:
         popup.bind("<FocusOut>", lambda _e: self.close_volume_popup())
         popup.bind("<Escape>", lambda _e: self.close_volume_popup())
         popup.update_idletasks()
-        x = self.root.winfo_pointerx() - popup.winfo_width() // 2
-        y = self.root.winfo_pointery() - popup.winfo_height() - 10
-        popup.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        gap = 40
+        pointer_x = self.root.winfo_pointerx()
+        pointer_y = self.root.winfo_pointery()
+        # Push away from the icon toward screen center, not just off its edge:
+        # a tray near the top gets the popup below it, and vice versa.
+        if pointer_y < screen_h / 2:
+            y = pointer_y + gap
+        else:
+            y = pointer_y - popup.winfo_height() - gap
+        x = pointer_x - popup.winfo_width() // 2
+        x = max(0, min(x, screen_w - popup.winfo_width()))
+        y = max(0, min(y, screen_h - popup.winfo_height()))
+        popup.geometry(f"+{x}+{y}")
+
         popup.lift()
-        popup.focus_force()
+        popup.update()          # ensure the window is actually mapped first --
+        popup.focus_force()     # override-redirect windows often won't take
+        # focus otherwise, so <FocusOut> alone can miss it. Delay the first
+        # check: focus transfer is asynchronous and may not have landed yet.
+        self.root.after(200, self._poll_popup_focus)
+
+    def _poll_popup_focus(self):
+        if not self.volume_popup:
+            return
+        focused = self.root.focus_get()
+        if focused is None or not str(focused).startswith(str(self.volume_popup)):
+            self.close_volume_popup()
+            return
+        self.root.after(200, self._poll_popup_focus)
 
     def close_volume_popup(self):
         if not self.volume_popup:

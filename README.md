@@ -8,7 +8,8 @@ GUI for controlling audio volume on a remote PipeWire machine over SSH.
 - Global keyboard shortcuts (configurable) to nudge volume up/down and
   toggle mute, regardless of which window has focus.
 - Minimises to a system tray icon on close; right-click the tray icon to
-  show the window again or exit, left-click for a quick volume/mute popup.
+  show the window again or exit, left-click for a quick volume/mute popup,
+  scroll over it to nudge volume directly (gtk tray backend only).
 - Remembers previously used hosts in a dropdown for quick reconnection.
 
 ## Requirements
